@@ -13,15 +13,22 @@
 # limitations under the License.
 from typing import Optional, Callable, List
 
+import itertools
 import json
+import os
 import re
+import time
 
 from openai import AsyncOpenAI, OpenAI
 
-from ipyh.constants import CELL_TIMEOUT_SEC, DEFAULT_TOOL_LIST, DEFAULT_SYSTEM_PROMPT, PRIVATE_PYTHON, TASK_PYTHON
+from ipyh.constants import (
+    CELL_TIMEOUT_SEC, DEFAULT_TOOL_LIST, DEFAULT_SYSTEM_PROMPT, MAX_OUTPUT_CHARS, OUTPUT_DIR, PRIVATE_PYTHON, TASK_PYTHON,
+)
 from ipyh.normalizers import python_default_normalizer, truncate
 
 _ANSI_SGR = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # colour in IPython tracebacks
+_TIMEOUT_LINE = re.compile(r"^\s*#\s*timeout:\s*(\d+)")  # first line `# timeout: N` sets the cell timeout
+_PYTHON_LINE = re.compile(r"^\s*(import |from |def |class |print\(|for |if |while |with |try:|[A-Za-z_][\w.]*\s*=[^=])")
 
 
 class Harness:
@@ -40,9 +47,7 @@ class Harness:
 
         # TODO: make it configurable later
         self.tool_list = DEFAULT_TOOL_LIST
-
-    def get_tools(self) -> List[dict]:
-        return self.tool_list
+        self._saved_outputs = itertools.count(1)
 
     def render_system_prompt(self, python: Optional[str]) -> str:
         """The system prompt for a kernel on `python` (None: a private interpreter)."""
@@ -64,6 +69,36 @@ class Harness:
             code = json.loads(tool_call["function"]["arguments"] or "{}")["code"]
         except (KeyError, TypeError, json.JSONDecodeError) as error:
             return f"[invalid tool call arguments: {error}]"
+        override = _TIMEOUT_LINE.match(code)
+        if override:
+            timeout = int(override.group(1))
+
+        started = time.monotonic()
+        output = self._run_cell(code, timeout, km, kc)
+        # Shell lines in a Python cell (`!cmd` then bare shell) fail to compile, so nothing ran: run them as bash
+        lines = code.strip().splitlines()
+        if "SyntaxError" in output and lines[0].lstrip().startswith("!") and len(lines) > 1 \
+                and not any(_PYTHON_LINE.match(line) for line in lines[1:]):
+            shell = "\n".join(line.lstrip()[1:] if line.lstrip().startswith("!") else line for line in lines)
+            output = "[ran as %%bash: the cell held shell lines]\n" + self._run_cell("%%bash\n" + shell, timeout, km, kc)
+        elapsed = time.monotonic() - started
+        if elapsed > 10:
+            output += f"\n[ran in {elapsed:.0f}s]"
+
+        saved_to = None
+        if len(output) > MAX_OUTPUT_CHARS:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            saved_to = f"{OUTPUT_DIR}/out-{next(self._saved_outputs)}.log"
+            with open(saved_to, "w") as f:
+                f.write(output)
+        output = truncate(output, saved_to=saved_to)
+
+        if post_process_output:
+            output = self.tool_processor(output)
+
+        return output
+
+    def _run_cell(self, code: str, timeout: int, km, kc) -> str:
         out = []
 
         def hook(msg):
@@ -80,9 +115,9 @@ class Harness:
         except TimeoutError:
             km.interrupt_kernel()
             out.append(f"\n[cell timed out after {timeout:.0f}s; kernel interrupted, state kept]\n")
-        output = truncate(_ANSI_SGR.sub("", "".join(out)) or "[no output]")
-
-        if post_process_output:
-            output = self.tool_processor(output)
-
-        return output
+            # The interrupted cell's last messages would be taken for the next cell's: absorb them with an empty one
+            try:
+                kc.execute_interactive("", output_hook=lambda msg: None, timeout=30, allow_stdin=False)
+            except TimeoutError:
+                pass
+        return _ANSI_SGR.sub("", "".join(out)) or "[no output]"

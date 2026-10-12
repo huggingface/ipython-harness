@@ -40,6 +40,10 @@ of the task, so never inspect, modify or point anything at them.
 How to work:
 - Write files with a `%%writefile <path>` cell, never by embedding their contents in Python
   string literals.
+- Change existing files with `edit(path, old, new)`, which replaces text that must occur exactly
+  once, and read them with `view(path, start=1, n=200)`, instead of rewriting or printing whole files.
+- A cell is interrupted after 300 s; start it with a `# timeout: N` line when it needs longer. Long
+  outputs are cut, and the full output is saved to the file named in the output.
 - Start long-running services in the background (`nohup … &`) and confirm they respond.
 - Never modify files the task tells you to keep unchanged; add new files instead.
 
@@ -71,6 +75,35 @@ NUDGE = (
 # A tool call the server failed to parse, left as text in the reply.
 TOOL_MARKUP = re.compile(r"<tool_call>|</tool_call>|<function=|<parameter=")
 
-MAX_OUTPUT_CHARS = 12_000  # longer cell output keeps its head and tail
-CELL_TIMEOUT_SEC = 600  # a cell running longer is interrupted; the kernel keeps its state
+MAX_OUTPUT_CHARS = 12_000  # longer cell output keeps its head and tail; the full output goes to OUTPUT_DIR
+OUTPUT_DIR = "/tmp/ipyh"
+CELL_TIMEOUT_SEC = 300  # a cell running longer is interrupted (the kernel keeps its state); `# timeout: N` overrides
+MAX_TOKENS_PER_TURN = 12_000  # reasoning + answer per model call, so one turn cannot use the whole time budget
+
+# Sent when a reply hits MAX_TOKENS_PER_TURN without a tool call.
+LENGTH_NOTE = (
+    "Your last reply was cut at the per-turn token limit before any tool call. Think in smaller "
+    "steps: run a cell now to check or build part of the solution."
+)
+
+# Run in the kernel at start: file helpers the model calls from its cells.
+HELPERS = '''
+def edit(path, old, new, count=1):
+    "Replace `old` with `new` in `path`; `old` must occur exactly `count` times."
+    text = open(path).read()
+    found = text.count(old)
+    if found != count:
+        raise ValueError(f"edit: the text occurs {found} times in {path}, expected {count}; view() the file and copy it exactly")
+    with open(path, "w") as f:
+        f.write(text.replace(old, new))
+    print(f"edited {path}")
+
+def view(path, start=1, n=200):
+    "Print `n` lines of `path` from line `start`, numbered."
+    lines = open(path, errors="replace").read().splitlines()
+    end = min(len(lines), start - 1 + n)
+    print("\\n".join(f"{i:>6}  {lines[i - 1]}" for i in range(max(start, 1), end + 1)))
+    if end < len(lines):
+        print(f"[{len(lines) - end} more lines: view({path!r}, start={end + 1})]")
+'''
 RETRY_DELAYS_SEC = (2, 5, 15, 30, 60, 120)  # model endpoint: connection errors and 5xx

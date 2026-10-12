@@ -67,12 +67,13 @@ _MASKS = [
 ]
 
 
-def truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
-    """Keep the head and tail of output longer than `limit` characters."""
+def truncate(text: str, limit: int = MAX_OUTPUT_CHARS, saved_to: str = None) -> str:
+    """Keep the head and tail of output longer than `limit` characters, naming where the full text is."""
     if len(text) <= limit:
         return text
     half = limit // 2
-    return f"{text[:half]}\n[… {len(text) - limit} chars truncated …]\n{text[-half:]}"
+    where = f"; full output in {saved_to}" if saved_to else ""
+    return f"{text[:half]}\n[… {len(text) - limit} chars truncated{where} …]\n{text[-half:]}"
 
 
 def python_default_normalizer(text: str) -> str:
