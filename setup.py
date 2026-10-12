@@ -13,7 +13,7 @@
 # limitations under the License.
 from pathlib import Path
 
-from setuptools import setup
+from setuptools import find_packages, setup
 
 requirements = [
     line.strip()
@@ -23,9 +23,9 @@ requirements = [
 
 setup(
     name="ipyharness",
-    version="0.0.1",
-    packages=["ipyh"],
-    package_dir={"ipyh": "src"},
+    version="0.1.0",
+    packages=find_packages("src"),
+    package_dir={"": "src"},
     install_requires=requirements,
     python_requires=">=3.9",
     license="Apache-2.0",

@@ -11,30 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import re
 
-# OpenAI compatible default tool list which consists of simply using ipython
+# OpenAI compatible tool list: a single `ipython` tool.
 DEFAULT_TOOL_LIST = [
     {
-      "type": "function",
-          "function": {
+        "type": "function",
+        "function": {
             "name": "ipython",
             "description": "Execute code in a persistent IPython kernel and return its output.",
             "parameters": {
-              "type": "object",
-              "properties": {
-                "code": {
-                  "type": "string",
-                  "description": "IPython cell to run."
-                }
-              },
-              "required": [
-                "code"
-              ]
-            }
-          }
+                "type": "object",
+                "properties": {"code": {"type": "string", "description": "IPython cell to run."}},
+                "required": ["code"],
+            },
+        },
     }
 ]
 
+# `{python}` is replaced by TASK_PYTHON or PRIVATE_PYTHON. The hard line breaks are part of the
+# prompt: changing them changes the tokens the model sees.
 DEFAULT_SYSTEM_PROMPT = """You are an autonomous agent solving a task inside a Linux container.
 You have exactly one tool, `ipython`, which runs code in a persistent IPython kernel; variables,
 imports and the working directory persist between calls. Run shell commands with `!cmd` or a
@@ -54,5 +50,27 @@ Before you finish:
    services and APIs directly rather than trusting your own variables. When the task states a
    tolerance or threshold, compare your result against it.
 3. Fix anything that does not match, then check again.
-Only then reply with a short summary and no tool call.
-"""
+Only then reply with a short summary and no tool call."""
+
+# Fills `{python}` when the kernel runs on the task's own interpreter (`{path}`).
+TASK_PYTHON = (
+    "The kernel uses the task's Python ({path}): its installed packages import directly, and "
+    "`!pip install …` installs into it."
+)
+# Fills `{python}` when the environment has no usable `python3` and the kernel runs a private one.
+PRIVATE_PYTHON = (
+    "The container has no usable `python3`, so the kernel runs a private Python; `%pip install …` "
+    "installs packages for the kernel."
+)
+
+# Sent once when the model replies with neither a tool call nor a final answer.
+NUDGE = (
+    "Your last reply had no tool call and no final answer. If the task is complete, reply with a "
+    "short summary and no tool call; otherwise continue by calling the `ipython` tool."
+)
+# A tool call the server failed to parse, left as text in the reply.
+TOOL_MARKUP = re.compile(r"<tool_call>|</tool_call>|<function=|<parameter=")
+
+MAX_OUTPUT_CHARS = 12_000  # longer cell output keeps its head and tail
+CELL_TIMEOUT_SEC = 600  # a cell running longer is interrupted; the kernel keeps its state
+RETRY_DELAYS_SEC = (2, 5, 15, 30, 60, 120)  # model endpoint: connection errors and 5xx

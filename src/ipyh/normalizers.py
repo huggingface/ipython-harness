@@ -36,6 +36,8 @@ from __future__ import annotations
 
 import re
 
+from ipyh.constants import MAX_OUTPUT_CHARS
+
 QUIET_ENV = {
     "PIP_PROGRESS_BAR": "off",  # pip's rich progress bar (the speed/eta line)
     "PIP_DISABLE_PIP_VERSION_CHECK": "1",  # "a new release of pip is available" notice
@@ -63,6 +65,14 @@ _MASKS = [
     (re.compile(r"(\bat 0x)[0-9a-fA-F]{6,}\b"), r"\1<addr>"),  # <Foo object at 0x7f3a…>
     (re.compile(r"((?:/tmp|/var/tmp)/[\w.-]*?(?:tmp|-))[a-z0-9_]{8}\b"), r"\1<tmp>"),
 ]
+
+
+def truncate(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+    """Keep the head and tail of output longer than `limit` characters."""
+    if len(text) <= limit:
+        return text
+    half = limit // 2
+    return f"{text[:half]}\n[… {len(text) - limit} chars truncated …]\n{text[-half:]}"
 
 
 def python_default_normalizer(text: str) -> str:
