@@ -35,56 +35,83 @@ class Agent:
         self.harness = harness
 
         self.trajectories = None
+        self.current_task = None
         self.max_iteration = kwargs.get("max_iteration", 100)
+        # A server can serve several models, `model_name` picks one of them. Otherwise
+        # we use the first model listed by the server's `/v1/models` endpoint
+        self.model_name = kwargs.get("model_name")
 
     def run_task(self, query: str, debug: bool = False):
         if self.trajectories is None:
             self.trajectories = {}
-        
+
+        if self.model_name is None:
+            self.model_name = self.model.models.list().data[0].id
+
         random_hash = secrets.token_hex(8)
-        self.trajectories[random_hash] = {}       
-        
+        self.trajectories[random_hash] = {}
+        self.current_task = random_hash
+
         km, kc = start_new_kernel(stderr=subprocess.DEVNULL)
-        
-        conversation = []
-        self.trajectories[random_hash]['kernels'] = [km, kc]
-        self.trajectories[random_hash]['trajectory'] = conversation
 
-        import pdb; pdb.set_trace()
-
-        # TODO: make the system prompt 
+        # TODO: make the system prompt
         conversation = [
             {"role": "system", "content": self.harness.system_prompt.format(python=sys.executable)},
             {"role": "user", "content": query}
         ]
-        first_response = self.model.chat.completions.create(
-            model='unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL',
+        self.trajectories[random_hash]['kernels'] = [km, kc]
+        self.trajectories[random_hash]['trajectory'] = conversation
+
+        # First iteration, in debug mode the caller drives the next ones with `run_step`
+        message = self.run_step()
+
+        if debug:
+            return message
+
+        for _ in range(self.max_iteration - 1):
+            # No tool call means the model considers the task done
+            if not message.tool_calls:
+                break
+            message = self.run_step()
+
+        return message
+
+    def run_step(self, optional_prompt: Optional[str] = None):
+        """
+        Runs a single turn on the current task: queries the model, then executes
+        every tool call it made. Returns the assistant message.
+        """
+        if self.current_task is None:
+            raise ValueError("No task is running, call `run_task` first")
+
+        trajectory = self.trajectories[self.current_task]
+        km, kc = trajectory['kernels']
+        conversation = trajectory['trajectory']
+
+        if optional_prompt is not None:
+            conversation.append({"role": "user", "content": optional_prompt})
+
+        response = self.model.chat.completions.create(
+            model=self.model_name,
             messages=conversation,
             tools=self.harness.tool_list
         )
-        first_message = first_response.choices[0].message
-        
-        # First iteration, we do it by hand
-        for call in first_message.tool_calls or []:
+        message = response.choices[0].message
+
+        assistant_message = {"role": "assistant", "content": message.content}
+        if message.tool_calls:
+            assistant_message["tool_calls"] = [call.model_dump() for call in message.tool_calls]
+        conversation.append(assistant_message)
+
+        for call in message.tool_calls or []:
             tool_call = call.model_dump()
             result = self.harness.execute_tool(
-                tool_call, 
+                tool_call,
                 post_process_output=True,
                 km=km,
                 kc=kc
             )
-            # TODO: here post-process (normalize)
             conversation.append({"role": "tool", "tool_call_id": tool_call["id"], "content": result})
-        
-        if debug:
-            return
-        
 
-
-        # for i in range(self.max_iteration):
-            
-
-        
-
-    # def run_step(self, optional_prompt: str = None):
+        return message
 
