@@ -1,0 +1,4 @@
+openai
+ipython
+jupyter_client
+ipykernel
