@@ -77,6 +77,7 @@ TOOL_MARKUP = re.compile(r"<tool_call>|</tool_call>|<function=|<parameter=")
 
 MAX_OUTPUT_CHARS = 12_000  # longer cell output keeps its head and tail; the full output goes to OUTPUT_DIR
 OUTPUT_DIR = "/tmp/ipyh"
+KERNEL_STARTUP_SEC = 300  # emulated or slow machines (amd64 images on Apple silicon) start the kernel slowly
 CELL_TIMEOUT_SEC = 300  # a cell running longer is interrupted (the kernel keeps its state); `# timeout: N` overrides
 MAX_TOKENS_PER_TURN = 12_000  # reasoning + answer per model call, so one turn cannot use the whole time budget
 

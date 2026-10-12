@@ -24,7 +24,7 @@ import time
 import openai
 from jupyter_client.manager import start_new_kernel
 
-from ipyh.constants import HELPERS, LENGTH_NOTE, MAX_TOKENS_PER_TURN, NUDGE, RETRY_DELAYS_SEC, TOOL_MARKUP
+from ipyh.constants import HELPERS, KERNEL_STARTUP_SEC, LENGTH_NOTE, MAX_TOKENS_PER_TURN, NUDGE, RETRY_DELAYS_SEC, TOOL_MARKUP
 from ipyh.harness import Harness
 from ipyh.normalizers import QUIET_ENV
 
@@ -73,7 +73,9 @@ class Agent:
         self.trajectories[random_hash] = {}
         self.current_task = random_hash
 
-        km, kc = await asyncio.to_thread(start_new_kernel, kernel_name="python3", stderr=subprocess.DEVNULL)
+        km, kc = await asyncio.to_thread(
+            start_new_kernel, kernel_name="python3", stderr=subprocess.DEVNULL, startup_timeout=KERNEL_STARTUP_SEC
+        )
         # Quiet progress bars and colour in the commands the model runs, and define the file helpers
         setup = f"import os; os.environ.update({json.dumps(QUIET_ENV)})\n{HELPERS}"
         await asyncio.to_thread(self.harness.execute_tool, {"function": {"arguments": json.dumps({"code": setup})}}, km=km, kc=kc)
@@ -193,13 +195,13 @@ class Agent:
             return await asyncio.to_thread(fn, *args, **kwargs)
         return await fn(*args, **kwargs)
 
-    async def _complete(self, conversation):
-        # Retries connection errors and 5xx; other errors raise with the server's reason
+    async def _complete(self, conversation, model: Optional[str] = None):
+        # Retries connection errors and 5xx; other errors raise with the server's reason. `model` overrides model_name
         for delay in (*RETRY_DELAYS_SEC, None):
             try:
                 return await self._call(
                     self.model.chat.completions.create,
-                    model=self.model_name,
+                    model=model or self.model_name,
                     messages=conversation,
                     tools=self.harness.tool_list,
                     max_tokens=self.max_tokens,

@@ -38,9 +38,19 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True, help="JSON file with the conversation and per-turn usage")
     parser.add_argument("--python", default=sys.executable, help="interpreter named in the system prompt; 'none' for a private one")
     parser.add_argument("--time-limit-sec", type=float, default=None, help="when set, tool results show the time used so far")
+    parser.add_argument("--policy", choices=["single", "best-of-n"], default="single",
+                        help="best-of-n (experimental): --generators propose each turn, --decision picks one")
+    parser.add_argument("--generators", default="", help="comma-separated model names served at --base-url")
+    parser.add_argument("--decision", default=None, help="decision model served at --base-url (/v1/systemone)")
     args = parser.parse_args()
 
-    agent = Harness() + AsyncOpenAI(base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"))
+    client = AsyncOpenAI(base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"))
+    if args.policy == "best-of-n":
+        from ipyh.experimental import BestOfN
+
+        agent = BestOfN(client, Harness(), generators=args.generators.split(","), decision_model=args.decision)
+    else:
+        agent = Harness() + client
     agent.model_name = args.model
     agent.python = None if args.python.lower() == "none" else args.python
     agent.time_limit_sec = args.time_limit_sec
