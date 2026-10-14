@@ -38,17 +38,32 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True, help="JSON file with the conversation and per-turn usage")
     parser.add_argument("--python", default=sys.executable, help="interpreter named in the system prompt; 'none' for a private one")
     parser.add_argument("--time-limit-sec", type=float, default=None, help="when set, tool results show the time used so far")
-    parser.add_argument("--policy", choices=["single", "best-of-n"], default="single",
-                        help="best-of-n (experimental): --generators propose each turn, --decision picks one")
+    parser.add_argument("--policy", choices=["single", "best-of-n", "ladder"], default="single",
+                        help="best-of-n (experimental): --generators propose each turn, --decision picks one; "
+                             "ladder (experimental): thinking rises when --gate rejects a step")
+    parser.add_argument("--gate", choices=["none", "signals", "decision"], default="none",
+                        help="ladder: what rejects a step (decision: --decision at --decision-url)")
+    parser.add_argument("--thinking-start", default="off", help="ladder: off, low, medium or xhigh")
+    parser.add_argument("--thinking-top", default="xhigh", help="ladder: highest level; its step is always run")
+    parser.add_argument("--gate-threshold", type=float, default=0.9, help="ladder with decision: lowest accepted score")
     parser.add_argument("--generators", default="", help="comma-separated model names served at --base-url")
-    parser.add_argument("--decision", default=None, help="decision model served at --base-url (/v1/systemone)")
+    parser.add_argument("--decision", default=None, help="decision model name (/v1/systemone)")
+    parser.add_argument("--decision-url", default=None,
+                        help="its own /v1 URL when not served at --base-url; key from DECISION_API_KEY")
     args = parser.parse_args()
 
     client = AsyncOpenAI(base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"))
     if args.policy == "best-of-n":
         from ipyh.experimental import BestOfN
 
-        agent = BestOfN(client, Harness(), generators=args.generators.split(","), decision_model=args.decision)
+        agent = BestOfN(client, Harness(), generators=args.generators.split(","), decision_model=args.decision,
+                        decision_url=args.decision_url)
+    elif args.policy == "ladder":
+        from ipyh.experimental import ThinkingLadder
+
+        agent = ThinkingLadder(client, Harness(), gate=args.gate, start=args.thinking_start, top=args.thinking_top,
+                               decision_model=args.decision, decision_url=args.decision_url,
+                               threshold=args.gate_threshold)
     else:
         agent = Harness() + client
     agent.model_name = args.model

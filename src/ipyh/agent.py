@@ -195,16 +195,19 @@ class Agent:
             return await asyncio.to_thread(fn, *args, **kwargs)
         return await fn(*args, **kwargs)
 
-    async def _complete(self, conversation, model: Optional[str] = None):
-        # Retries connection errors and 5xx; other errors raise with the server's reason. `model` overrides model_name
+    async def _complete(self, conversation, model: Optional[str] = None, client=None, extra_body: Optional[dict] = None):
+        # Retries connection errors and 5xx; other errors raise with the server's reason. `model` overrides
+        # model_name, `client` the server (a generator on its own address in experimental.BestOfN),
+        # `extra_body` adds request fields (e.g. chat_template_kwargs in experimental.ThinkingLadder)
         for delay in (*RETRY_DELAYS_SEC, None):
             try:
                 return await self._call(
-                    self.model.chat.completions.create,
+                    (client or self.model).chat.completions.create,
                     model=model or self.model_name,
                     messages=conversation,
                     tools=self.harness.tool_list,
                     max_tokens=self.max_tokens,
+                    extra_body=extra_body,
                 )
             except openai.APIConnectionError:
                 if delay is None:
