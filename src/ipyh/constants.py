@@ -22,7 +22,9 @@ DEFAULT_TOOL_LIST = [
             "description": "Execute code in a persistent IPython kernel and return its output.",
             "parameters": {
                 "type": "object",
-                "properties": {"code": {"type": "string", "description": "IPython cell to run."}},
+                "properties": {
+                    "code": {"type": "string", "description": "IPython cell to run."}
+                },
                 "required": ["code"],
             },
         },
@@ -87,7 +89,7 @@ LENGTH_NOTE = (
 )
 
 # Run in the kernel at start: file helpers the model calls from its cells.
-HELPERS = '''
+HELPERS = """
 def edit(path, old, new, count=1):
     "Replace `old` with `new` in `path`; `old` must occur exactly `count` times."
     text = open(path).read()
@@ -105,5 +107,5 @@ def view(path, start=1, n=200):
     print("\\n".join(f"{i:>6}  {lines[i - 1]}" for i in range(max(start, 1), end + 1)))
     if end < len(lines):
         print(f"[{len(lines) - end} more lines: view({path!r}, start={end + 1})]")
-'''
+"""
 RETRY_DELAYS_SEC = (2, 5, 15, 30, 60, 120)  # model endpoint: connection errors and 5xx

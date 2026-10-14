@@ -50,7 +50,11 @@ from ipyh.kernels import RemoteKernel
 class IPyHarnessAgent(BaseInstalledAgent):
     # max_turns=None: no turn cap, so Harbor's agent timeout is the only budget.
     def __init__(
-        self, *args: Any, max_turns: Optional[int] = None, cell_timeout_sec: int = CELL_TIMEOUT_SEC, **kwargs: Any
+        self,
+        *args: Any,
+        max_turns: Optional[int] = None,
+        cell_timeout_sec: int = CELL_TIMEOUT_SEC,
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self._max_turns = max_turns
@@ -72,11 +76,15 @@ class IPyHarnessAgent(BaseInstalledAgent):
             return result.stdout, result.stderr, result.return_code
 
         async def as_root(command: str, timeout_sec: Optional[int]):
-            result = await self.exec_as_root(environment, command=command, timeout_sec=timeout_sec)
+            result = await self.exec_as_root(
+                environment, command=command, timeout_sec=timeout_sec
+            )
             return result.stdout, result.stderr, result.return_code
 
         async def as_agent(command: str, timeout_sec: Optional[int]):
-            result = await self.exec_as_agent(environment, command=command, timeout_sec=timeout_sec)
+            result = await self.exec_as_agent(
+                environment, command=command, timeout_sec=timeout_sec
+            )
             return result.stdout, result.stderr, result.return_code
 
         self._kernel = RemoteKernel(run, cell_timeout_sec=self._cell_timeout_sec)
@@ -92,7 +100,9 @@ class IPyHarnessAgent(BaseInstalledAgent):
         values = resolve_env_vars(values)
         return values["OPENAI_BASE_URL"].rstrip("/"), values["OPENAI_API_KEY"]
 
-    async def run(self, instruction: str, environment: BaseEnvironment, context: AgentContext) -> None:
+    async def run(
+        self, instruction: str, environment: BaseEnvironment, context: AgentContext
+    ) -> None:
         if self._kernel is None:
             raise RuntimeError("install() must run before run()")
         base_url, api_key = self._endpoint()
@@ -103,7 +113,9 @@ class IPyHarnessAgent(BaseInstalledAgent):
             context.n_input_tokens = task.prompt_tokens
             context.n_output_tokens = task.completion_tokens
             trajectory = self._trajectory(task, session_id, harness)
-            (self.logs_dir / "trajectory.json").write_text(format_trajectory_json(trajectory.to_json_dict()))
+            (self.logs_dir / "trajectory.json").write_text(
+                format_trajectory_json(trajectory.to_json_dict())
+            )
 
         agent = Agent(
             model=AsyncOpenAI(base_url=base_url, api_key=api_key),
@@ -120,13 +132,27 @@ class IPyHarnessAgent(BaseInstalledAgent):
         for record in task.steps:
             step_id = len(steps) + 1
             if record["source"] == "user":
-                steps.append(Step(step_id=step_id, timestamp=record["timestamp"], source="user", message=record["message"]))
+                steps.append(
+                    Step(
+                        step_id=step_id,
+                        timestamp=record["timestamp"],
+                        source="user",
+                        message=record["message"],
+                    )
+                )
                 continue
             calls = [
-                ToolCall(tool_call_id=call["id"], function_name="ipython", arguments={"code": call["code"]})
+                ToolCall(
+                    tool_call_id=call["id"],
+                    function_name="ipython",
+                    arguments={"code": call["code"]},
+                )
                 for call in record["tool_calls"]
             ]
-            results = [ObservationResult(source_call_id=o["call_id"], content=o["content"]) for o in record["observations"]]
+            results = [
+                ObservationResult(source_call_id=o["call_id"], content=o["content"])
+                for o in record["observations"]
+            ]
             steps.append(
                 Step(
                     step_id=step_id,
@@ -148,7 +174,10 @@ class IPyHarnessAgent(BaseInstalledAgent):
         return Trajectory(
             session_id=session_id,
             agent=AtifAgent(
-                name=self.name(), version=self.version(), model_name=self.model_name, tool_definitions=harness.tool_list
+                name=self.name(),
+                version=self.version(),
+                model_name=self.model_name,
+                tool_definitions=harness.tool_list,
             ),
             steps=steps,
             final_metrics=FinalMetrics(

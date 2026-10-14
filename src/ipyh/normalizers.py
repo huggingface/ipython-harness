@@ -84,4 +84,3 @@ def python_default_normalizer(text: str) -> str:
     for pattern, replacement in _MASKS:
         text = pattern.sub(replacement, text)
     return text
-

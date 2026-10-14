@@ -32,7 +32,9 @@ from ipyh.constants import CELL_TIMEOUT_SEC
 from ipyh.normalizers import QUIET_ENV
 
 # exec(command, timeout_sec) -> (stdout, stderr, return_code)
-Exec = Callable[[str, Optional[int]], Awaitable[Tuple[Optional[str], Optional[str], int]]]
+Exec = Callable[
+    [str, Optional[int]], Awaitable[Tuple[Optional[str], Optional[str], int]]
+]
 
 
 ROOT = "/opt/ipy"  # kernel venv (and uv), kept apart from the task's own environment
@@ -76,7 +78,7 @@ del _use_task_python
 """
 
 # Runs inside the sandbox with the kernel venv's Python: executes one cell, prints its output.
-RUN_CELL = r'''
+RUN_CELL = r"""
 import os, re, signal, sys
 from jupyter_client import BlockingKernelClient
 
@@ -103,7 +105,7 @@ except TimeoutError:
     out.append(f"\n[cell timed out after {timeout:.0f}s; kernel interrupted, state kept]\n")
 text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", "".join(out))
 sys.stdout.write(text or "[no output]")
-'''
+"""
 
 # Starts the kernel in the background from the caller's working directory and waits for it.
 LAUNCH = (
@@ -128,13 +130,17 @@ class RemoteKernel:
     to launch the kernel as the task's user, from the task's working directory.
     """
 
-    def __init__(self, exec: Exec, cell_timeout_sec: int = CELL_TIMEOUT_SEC, quiet: bool = True) -> None:
+    def __init__(
+        self, exec: Exec, cell_timeout_sec: int = CELL_TIMEOUT_SEC, quiet: bool = True
+    ) -> None:
         self.exec = exec
         self.cell_timeout_sec = cell_timeout_sec
         self.quiet = quiet
         self.python: Optional[str] = None
 
-    async def install(self, root_exec: Optional[Exec] = None, agent_exec: Optional[Exec] = None) -> "RemoteKernel":
+    async def install(
+        self, root_exec: Optional[Exec] = None, agent_exec: Optional[Exec] = None
+    ) -> "RemoteKernel":
         root_exec, agent_exec = root_exec or self.exec, agent_exec or self.exec
         stdout, stderr, rc = await root_exec(INSTALL, None)
         if rc != 0:
@@ -142,9 +148,13 @@ class RemoteKernel:
         self.python = (stdout or "").strip() or None
         startup = STARTUP.format(path=self.python) if self.python else ""
         for name, content in (("run_cell.py", RUN_CELL), ("startup.py", startup)):
-            stdout, stderr, rc = await root_exec(_write_file(f"{RUN}/{name}", content), None)
+            stdout, stderr, rc = await root_exec(
+                _write_file(f"{RUN}/{name}", content), None
+            )
             if rc != 0:
-                raise RuntimeError(f"writing {RUN}/{name} failed ({rc}): {stderr or stdout}")
+                raise RuntimeError(
+                    f"writing {RUN}/{name} failed ({rc}): {stderr or stdout}"
+                )
         stdout, stderr, rc = await agent_exec(LAUNCH, None)
         if rc != 0:
             raise RuntimeError(f"kernel launch failed ({rc}): {stderr or stdout}")

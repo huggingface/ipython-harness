@@ -18,6 +18,7 @@
 The kernel runs on this machine, in the current directory: use a throwaway container. The output is
 rewritten after every turn, so a run that is killed still leaves its conversation so far.
 """
+
 import argparse
 import asyncio
 import json
@@ -31,16 +32,44 @@ from ipyh import Harness, __version__
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(prog="python -m ipyh", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--base-url", default=os.environ.get("OPENAI_BASE_URL"), help="OpenAI-compatible /v1 URL")
-    parser.add_argument("--model", default=None, help="served model name (default: the first one listed)")
+    parser = argparse.ArgumentParser(
+        prog="python -m ipyh",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("OPENAI_BASE_URL"),
+        help="OpenAI-compatible /v1 URL",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="served model name (default: the first one listed)",
+    )
     parser.add_argument("--instruction-file", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True, help="JSON file with the conversation and per-turn usage")
-    parser.add_argument("--python", default=sys.executable, help="interpreter named in the system prompt; 'none' for a private one")
-    parser.add_argument("--time-limit-sec", type=float, default=None, help="when set, tool results show the time used so far")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="JSON file with the conversation and per-turn usage",
+    )
+    parser.add_argument(
+        "--python",
+        default=sys.executable,
+        help="interpreter named in the system prompt; 'none' for a private one",
+    )
+    parser.add_argument(
+        "--time-limit-sec",
+        type=float,
+        default=None,
+        help="when set, tool results show the time used so far",
+    )
     args = parser.parse_args()
 
-    agent = Harness() + AsyncOpenAI(base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY"))
+    agent = Harness() + AsyncOpenAI(
+        base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY")
+    )
     agent.model_name = args.model
     agent.python = None if args.python.lower() == "none" else args.python
     agent.time_limit_sec = args.time_limit_sec
