@@ -7,7 +7,6 @@ from openai import OpenAI
 from ipyh import Harness
 
 url = "http://localhost:8080/v1"
-model_name = "unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL"
 model = OpenAI(base_url=url, api_key="EMPTY")
 
 task = "Please analyse the current codebase and write me a minimal README.md file that guides the user on the purpose of this library and how to use it with `example.py`"
