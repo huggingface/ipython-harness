@@ -25,7 +25,6 @@ import openai
 from jupyter_client.manager import start_new_kernel
 
 from ipyh.constants import (
-    HELPERS,
     LENGTH_NOTE,
     MAX_TOKENS_PER_TURN,
     NUDGE,
@@ -89,7 +88,8 @@ class Agent:
             start_new_kernel, kernel_name="python3", stderr=subprocess.DEVNULL
         )
         # Quiet progress bars and colour in the commands the model runs, and define the file helpers
-        setup = f"import os; os.environ.update({json.dumps(QUIET_ENV)})\n{HELPERS}"
+        # and kernel tools
+        setup = f"import os; os.environ.update({json.dumps(QUIET_ENV)})\n{self.harness.setup_code()}"
         await asyncio.to_thread(
             self.harness.execute_tool,
             {"function": {"arguments": json.dumps({"code": setup})}},
@@ -251,7 +251,7 @@ class Agent:
         return await fn(*args, **kwargs)
 
     async def _complete(self, conversation):
-        # Retries connection errors and 5xx; other errors raise with the server's reason
+        # Retries connection errors, rate limits (429) and 5xx; other errors raise with the server's reason
         for delay in (*RETRY_DELAYS_SEC, None):
             try:
                 return await self._call(
@@ -265,6 +265,7 @@ class Agent:
                 if delay is None:
                     raise
             except openai.APIStatusError as error:
-                if error.status_code < 500 or delay is None:
+                retryable = error.status_code >= 500 or error.status_code == 429
+                if not retryable or delay is None:
                     raise
             await asyncio.sleep(delay)

@@ -60,6 +60,11 @@ def main() -> None:
         help="interpreter named in the system prompt; 'none' for a private one",
     )
     parser.add_argument(
+        "--harness-config",
+        type=Path,
+        help="JSON file with a system_prompt and kernel tools (see Harness.from_config)",
+    )
+    parser.add_argument(
         "--time-limit-sec",
         type=float,
         default=None,
@@ -67,7 +72,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    agent = Harness() + AsyncOpenAI(
+    harness = Harness.from_config(args.harness_config) if args.harness_config else Harness()
+    agent = harness + AsyncOpenAI(
         base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY")
     )
     agent.model_name = args.model

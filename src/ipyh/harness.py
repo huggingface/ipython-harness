@@ -25,6 +25,7 @@ from ipyh.constants import (
     CELL_TIMEOUT_SEC,
     DEFAULT_TOOL_LIST,
     DEFAULT_SYSTEM_PROMPT,
+    HELPERS,
     MAX_OUTPUT_CHARS,
     OUTPUT_DIR,
     PRIVATE_PYTHON,
@@ -51,14 +52,35 @@ class Harness:
         self,
         system_prompt: Optional[str] = DEFAULT_SYSTEM_PROMPT,
         tool_processor: Optional[Callable] = python_default_normalizer,
+        tools: Optional[List[dict]] = None,
         **kwargs,
     ):
         self.system_prompt = system_prompt
         self.tool_processor = tool_processor
 
-        # TODO: make it configurable later
-        self.tool_list = DEFAULT_TOOL_LIST
+        # Kernel tools: each is a Python function, defined in the kernel by `code`, that the model
+        # calls as its own tool, e.g. {"name": "f", "description": ..., "parameters": {...}, "code": "def f(x): ..."}
+        self.kernel_tools = {tool["name"]: tool for tool in tools or []}
+        self.tool_list = DEFAULT_TOOL_LIST + [
+            {"type": "function", "function": {key: tool[key] for key in ("name", "description", "parameters")}}
+            for tool in self.kernel_tools.values()
+        ]
         self._saved_outputs = itertools.count(1)
+
+    @classmethod
+    def from_config(cls, path: str, **kwargs) -> "Harness":
+        """A harness from a JSON file with an optional `system_prompt` and `tools` (kernel tools)."""
+        with open(path) as f:
+            config = json.load(f)
+        return cls(
+            system_prompt=config.get("system_prompt", DEFAULT_SYSTEM_PROMPT),
+            tools=config.get("tools"),
+            **kwargs,
+        )
+
+    def setup_code(self) -> str:
+        """Run once in each new kernel: the file helpers, then the kernel tools' definitions."""
+        return "\n".join([HELPERS, *(tool["code"] for tool in self.kernel_tools.values())])
 
     def render_system_prompt(self, python: Optional[str]) -> str:
         """The system prompt for a kernel on `python` (None: a private interpreter)."""
@@ -86,8 +108,11 @@ class Harness:
     ):
         km, kc = tool_kwargs["km"], tool_kwargs["kc"]
 
+        name = tool_call.get("function", {}).get("name")
         try:
-            code = json.loads(tool_call["function"]["arguments"] or "{}")["code"]
+            arguments = json.loads(tool_call["function"]["arguments"] or "{}")
+            # A kernel tool call becomes a call of its function; the ipython tool runs the code itself
+            code = f"{name}(**{arguments!r})" if name in self.kernel_tools else arguments["code"]
         except (KeyError, TypeError, json.JSONDecodeError) as error:
             return f"[invalid tool call arguments: {error}]"
         override = _TIMEOUT_LINE.match(code)
