@@ -16,6 +16,7 @@ from typing import Optional
 import asyncio
 import itertools
 import json
+import re
 import secrets
 import sys
 import subprocess
@@ -33,6 +34,51 @@ from ipyh.constants import (
 )
 from ipyh.harness import Harness
 from ipyh.normalizers import QUIET_ENV
+
+
+_XML_CALL = re.compile(r"<tool_call>\s*<function=([\w.-]+)>(.*?)</function>\s*</tool_call>", re.S)
+_XML_PARAMETER = re.compile(r"<parameter=([\w.-]+)>\n?(.*?)\n?</parameter>", re.S)
+_JSON_CALL = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
+
+
+def recover_tool_calls(text: str, tool_list: list) -> list:
+    """
+    Complete tool calls left as text that the server did not parse (some providers leave them in
+    the reasoning), in the XML `<function=...><parameter=...>` or the JSON `<tool_call>` format.
+    """
+    schemas = {
+        tool["function"]["name"]: tool["function"].get("parameters", {}).get("properties", {})
+        for tool in tool_list
+    }
+
+    def typed(name, key, value):
+        # XML values are text: decode them only where the tool's schema expects something else
+        if schemas.get(name, {}).get(key, {}).get("type", "string") == "string":
+            return value
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+
+    calls = [
+        (name, {key: typed(name, key, value) for key, value in _XML_PARAMETER.findall(body)})
+        for name, body in _XML_CALL.findall(text)
+    ]
+    for raw in [] if calls else _JSON_CALL.findall(text):
+        try:
+            call = json.loads(raw)
+            calls.append((call["name"], call.get("arguments") or {}))
+        except (ValueError, KeyError, TypeError):
+            pass
+    return [
+        {
+            "id": f"call_{secrets.token_hex(6)}",
+            "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)},
+        }
+        for name, arguments in calls
+        if name in schemas
+    ]
 
 
 class Agent:
@@ -159,7 +205,10 @@ class Agent:
             or ""
         )
         assistant_message = {"role": "assistant", "content": content}
-        tool_calls = message.tool_calls
+        tool_calls = [call.model_dump() for call in message.tool_calls or []]
+        if not tool_calls:
+            # A call left as text (e.g. in the reasoning) is run as the model intended
+            tool_calls = recover_tool_calls(content + "\n" + reasoning, self.harness.tool_list)
 
         # Keep the latest reasoning in the history, so work done while thinking is not re-derived; older
         # turns drop it to bound the context
@@ -178,11 +227,9 @@ class Agent:
         )
 
         if tool_calls:
-            assistant_message["tool_calls"] = [call.model_dump() for call in tool_calls]
+            assistant_message["tool_calls"] = tool_calls
 
-            for call in message.tool_calls:
-                tool_call = call.model_dump()
-
+            for tool_call in tool_calls:
                 if approve_commands:
                     approve = input(
                         f"The model is about to call the following tool: {tool_call}\napprove ? y/n\n"
