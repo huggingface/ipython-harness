@@ -16,24 +16,33 @@ from typing import Optional
 import asyncio
 import itertools
 import json
+import os
 import re
 import secrets
 import sys
 import subprocess
 import time
+from pathlib import Path
 
 import openai
 from jupyter_client.manager import start_new_kernel
 
 from ipyh.constants import (
+    COMPACT_CELL_CHARS,
+    COMPACT_HEADROOM,
+    COMPACT_KEEP_CHARS,
+    COMPACT_PROMPT,
+    CONTEXT_OVERFLOW,
     LENGTH_NOTE,
     MAX_TOKENS_PER_TURN,
     NUDGE,
+    OUTPUT_DIR,
     RETRY_DELAYS_SEC,
+    SUMMARY_PREFIX,
     TOOL_MARKUP,
 )
 from ipyh.harness import Harness
-from ipyh.normalizers import QUIET_ENV
+from ipyh.normalizers import QUIET_ENV, truncate
 
 
 _XML_CALL = re.compile(r"<tool_call>\s*<function=([\w.-]+)>(.*?)</function>\s*</tool_call>", re.S)
@@ -81,6 +90,22 @@ def recover_tool_calls(text: str, tool_list: list) -> list:
     ]
 
 
+def render_transcript(messages: list, limit: Optional[int] = None) -> str:
+    """Messages as plain text, each cell and output cut to `limit` characters (None: whole)."""
+    parts = []
+    for message in messages:
+        text = message.get("content") or ""
+        for call in message.get("tool_calls") or []:
+            arguments = call["function"]["arguments"]
+            try:
+                arguments = json.loads(arguments).get("code", arguments)
+            except (ValueError, AttributeError):
+                pass
+            text += f"\n[{call['function']['name']}]\n{arguments}"
+        parts.append(f"[{message['role']}]\n{truncate(text, limit) if limit else text}")
+    return "\n\n".join(parts)
+
+
 class Agent:
     """
     Drives a model through a task with the harness's `ipython` tool, in a kernel on this machine
@@ -116,6 +141,9 @@ class Agent:
         self.max_tokens = kwargs.get("max_tokens", MAX_TOKENS_PER_TURN)
         # When set, tool results end with the time used so far, e.g. `[elapsed 12m of 60m]`
         self.time_limit_sec = kwargs.get("time_limit_sec")
+        # The model's context window in tokens, to compact before it fills. None: compact only when
+        # the server rejects a request as too long
+        self.context_window = kwargs.get("context_window")
 
     async def run_task(
         self, query: str, debug: bool = False, approve_commands: bool = False
@@ -151,6 +179,9 @@ class Agent:
             {"role": "user", "content": query},
         ]
         self.trajectories[random_hash]["kernels"] = [km, kc]
+        self.trajectories[random_hash]["query"] = query
+        # The turns each compaction replaced, oldest first
+        self.trajectories[random_hash]["compacted"] = []
         self.trajectories[random_hash]["trajectory"] = conversation
         # One entry per model call: token usage and reasoning (which is not sent back to the model)
         self.trajectories[random_hash]["turns"] = []
@@ -195,7 +226,13 @@ class Agent:
         if optional_prompt is not None:
             conversation.append({"role": "user", "content": optional_prompt})
 
-        response = await self._complete(conversation)
+        try:
+            response = await self._complete(conversation)
+        except openai.BadRequestError as error:
+            if not CONTEXT_OVERFLOW.search(str(error)):
+                raise
+            await self.compact()
+            response = await self._complete(conversation)
         message = response.choices[0].message
 
         content = message.content or ""
@@ -254,6 +291,10 @@ class Agent:
                     f"\n[elapsed {minutes:.0f}m of {self.time_limit_sec / 60:.0f}m]"
                 )
             trajectory["nudged"] = False
+            if self.context_window and usage and usage.total_tokens > (
+                self.context_window - self.max_tokens - COMPACT_HEADROOM
+            ):
+                await self.compact()
 
         # A reply cut at the token limit is not an answer: ask for smaller steps
         elif response.choices[0].finish_reason == "length":
@@ -286,6 +327,48 @@ class Agent:
             self.run_step(optional_prompt, approve_commands=approve_commands)
         )
 
+    async def compact(self):
+        """
+        Replaces the current task's older turns by a checkpoint the model writes, keeping the system
+        prompt, the task and the most recent turns. The kernel keeps its state, so the checkpoint only
+        has to say what was done and what is left; the full transcript is saved to a file.
+        """
+        trajectory = self.trajectories[self.current_task]
+        conversation = trajectory["trajectory"]
+        # The kept turns start at an assistant message, so every tool result keeps its call
+        starts = [i for i, message in enumerate(conversation) if message["role"] == "assistant"]
+        cut = next(
+            (
+                i
+                for i in starts
+                if len(json.dumps(conversation[i:])) <= COMPACT_KEEP_CHARS
+            ),
+            starts[-1] if starts else len(conversation),
+        )
+        older = conversation[1:cut]  # from the task (and an earlier checkpoint) onwards
+        if len(older) < 2:
+            return
+
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        path = Path(OUTPUT_DIR, f"transcript-{self.current_task}-{len(trajectory['compacted']) + 1}.md")
+        await asyncio.to_thread(path.write_text, render_transcript(older))
+
+        transcript = render_transcript(older, limit=COMPACT_CELL_CHARS)
+        if self.context_window:
+            # ~3 characters per token, leaving room for the prompt and the reply
+            transcript = truncate(transcript, 3 * (self.context_window - 2 * self.max_tokens))
+        request = f"<conversation>\n{transcript}\n</conversation>\n\n{COMPACT_PROMPT}"
+        response = await self._complete([{"role": "user", "content": request}], tools=False)
+        summary = response.choices[0].message.content or "(the checkpoint could not be written)"
+
+        trajectory["compacted"].append(conversation[1:cut])
+        conversation[1:cut] = [
+            {
+                "role": "user",
+                "content": f"{trajectory['query']}\n\n{SUMMARY_PREFIX.format(path=path)}\n{summary}",
+            }
+        ]
+
     def shutdown_kernel(self, task: Optional[str] = None):
         km, kc = self.trajectories[task or self.current_task]["kernels"]
         kc.stop_channels()
@@ -297,7 +380,7 @@ class Agent:
             return await asyncio.to_thread(fn, *args, **kwargs)
         return await fn(*args, **kwargs)
 
-    async def _complete(self, conversation):
+    async def _complete(self, conversation, tools: bool = True):
         # Retries connection errors, rate limits (429) and 5xx; other errors raise with the server's reason
         for delay in (*RETRY_DELAYS_SEC, None):
             try:
@@ -305,7 +388,7 @@ class Agent:
                     self.model.chat.completions.create,
                     model=self.model_name,
                     messages=conversation,
-                    tools=self.harness.tool_list,
+                    tools=self.harness.tool_list if tools else openai.NOT_GIVEN,
                     max_tokens=self.max_tokens,
                 )
             except openai.APIConnectionError:

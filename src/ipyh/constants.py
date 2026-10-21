@@ -109,3 +109,39 @@ def view(path, start=1, n=200):
         print(f"[{len(lines) - end} more lines: view({path!r}, start={end + 1})]")
 """
 RETRY_DELAYS_SEC = (2, 5, 15, 30, 60, 120)  # model endpoint: connection errors and 5xx
+
+# Compaction: when a turn ends within `max_tokens + COMPACT_HEADROOM` of `context_window`, or the server
+# rejects a request as too long, the older turns are replaced by a model-written checkpoint
+COMPACT_HEADROOM = 4_000  # tokens: room for the cell output appended after the measured turn
+COMPACT_KEEP_CHARS = 40_000  # the most recent turns kept verbatim (~10k tokens)
+COMPACT_CELL_CHARS = 2_000  # each cell and its output, as the summarizer reads them
+# Matches a server's "prompt too long" rejection (OpenAI, vLLM, llama.cpp, SGLang)
+CONTEXT_OVERFLOW = re.compile(
+    r"context.?(length|size|window)|too many tokens|prompt is too long", re.I
+)
+
+# Sent after the transcript of the turns being compacted.
+COMPACT_PROMPT = """The conversation above is being compacted. Write a checkpoint that another agent will use to
+continue the task in the same IPython kernel, whose variables, files and running processes are
+all still there.
+
+Use exactly these sections, and keep exact paths, names, commands, values and error messages:
+## Progress
+What is done and checked, and what was tried and failed (and why).
+## Kernel and filesystem state
+Variables and functions defined, files written or edited, packages installed, services running
+(with their ports).
+## Requirements
+Each requirement of the task, and whether it is met, unchecked or not started.
+## Next steps
+The actions that remain, in order.
+
+If the conversation starts with an earlier checkpoint, merge it into this one. Reply with the
+checkpoint only."""
+
+# Follows the task in the compacted conversation, then the checkpoint.
+SUMMARY_PREFIX = (
+    "Your earlier turns on this task were compacted to save context; the kernel's state is "
+    "unchanged. The full earlier conversation is in {path}: `view()` it for a detail the "
+    "checkpoint lacks. Checkpoint:"
+)
