@@ -25,11 +25,18 @@ from ipyh.constants import (
     CELL_TIMEOUT_SEC,
     DEFAULT_TOOL_LIST,
     DEFAULT_SYSTEM_PROMPT,
+    DEFINE_TOOL,
     HELPERS,
+    MAX_CREATED_TOOLS,
     MAX_OUTPUT_CHARS,
+    MAX_TOOL_CODE_CHARS,
+    ONE_TOOL,
     OUTPUT_DIR,
     PRIVATE_PYTHON,
+    RESERVED_TOOL_NAMES,
     TASK_PYTHON,
+    TOOL_CREATION_NOTE,
+    TOOLS_SECTION,
 )
 from ipyh.normalizers import python_default_normalizer, truncate
 
@@ -53,29 +60,45 @@ class Harness:
         system_prompt: Optional[str] = DEFAULT_SYSTEM_PROMPT,
         tool_processor: Optional[Callable] = python_default_normalizer,
         tools: Optional[List[dict]] = None,
+        tool_creation: bool = False,
         **kwargs,
     ):
         self.system_prompt = system_prompt
         self.tool_processor = tool_processor
+        # When set, the model gets `define_tool` and adds kernel tools of its own while it runs
+        self.tool_creation = tool_creation
 
         # Kernel tools: each is a Python function, defined in the kernel by `code`, that the model
         # calls as its own tool, e.g. {"name": "f", "description": ..., "parameters": {...}, "code": "def f(x): ..."}
         self.kernel_tools = {tool["name"]: tool for tool in tools or []}
-        self.tool_list = DEFAULT_TOOL_LIST + [
-            {"type": "function", "function": {key: tool[key] for key in ("name", "description", "parameters")}}
-            for tool in self.kernel_tools.values()
-        ]
+        self.configured_tools = set(self.kernel_tools)
+        # Tools the model defined with `define_tool`, in order (a redefinition is recorded again)
+        self.created_tools: List[dict] = []
+        self._update_tool_list()
         self._saved_outputs = itertools.count(1)
 
     @classmethod
     def from_config(cls, path: str, **kwargs) -> "Harness":
-        """A harness from a JSON file with an optional `system_prompt` and `tools` (kernel tools)."""
+        """A harness from a JSON file with an optional `system_prompt`, `tools` (kernel tools) and
+        `tool_creation`."""
         with open(path) as f:
             config = json.load(f)
         return cls(
             system_prompt=config.get("system_prompt", DEFAULT_SYSTEM_PROMPT),
             tools=config.get("tools"),
+            tool_creation=config.get("tool_creation", False),
             **kwargs,
+        )
+
+    def _update_tool_list(self) -> None:
+        # The agent sends `tool_list` with every model call, so a tool defined now is offered next turn
+        self.tool_list = (
+            DEFAULT_TOOL_LIST
+            + ([DEFINE_TOOL] if self.tool_creation else [])
+            + [
+                {"type": "function", "function": {key: tool[key] for key in ("name", "description", "parameters")}}
+                for tool in self.kernel_tools.values()
+            ]
         )
 
     def setup_code(self) -> str:
@@ -83,10 +106,62 @@ class Harness:
         return "\n".join([HELPERS, *(tool["code"] for tool in self.kernel_tools.values())])
 
     def render_system_prompt(self, python: Optional[str]) -> str:
-        """The system prompt for a kernel on `python` (None: a private interpreter)."""
-        return self.system_prompt.format(
-            python=TASK_PYTHON.format(path=python) if python else PRIVATE_PYTHON
+        """The system prompt for a kernel on `python` (None: a private interpreter).
+
+        `{python}` is substituted by replacement, not `str.format`, so prompts may hold braces. With
+        kernel tools (or tool creation) the prompt lists them; without, it is sent unchanged.
+        """
+        prompt = self.system_prompt.replace(
+            "{python}", TASK_PYTHON.format(path=python) if python else PRIVATE_PYTHON
         )
+        configured = [tool for name, tool in self.kernel_tools.items() if name in self.configured_tools]
+        if configured or self.tool_creation:
+            prompt = prompt.replace(*ONE_TOOL)
+        if configured:
+            listing = "\n".join(f"- `{tool['name']}`: {tool['description']}" for tool in configured)
+            prompt += TOOLS_SECTION.format(tools=listing)
+        if self.tool_creation:
+            prompt += TOOL_CREATION_NOTE.format(limit=MAX_CREATED_TOOLS)
+        return prompt
+
+    def define_tool(self, arguments: dict, km, kc) -> str:
+        """Run a `define_tool` call: validate it, define the function in the kernel, offer it as a tool."""
+        try:
+            tool = self._validate_tool(arguments)
+        except (ValueError, SyntaxError) as error:
+            return f"[define_tool rejected: {error}]"
+        # A sentinel printed after the definition tells that it ran without error
+        sentinel = f"[defined {tool['name']}]"
+        output = self._run_cell(f"{tool['code']}\nprint({sentinel!r})", CELL_TIMEOUT_SEC, km, kc)
+        if sentinel not in output:
+            return f"[define_tool failed: the code raised while being defined]\n{output}"
+        self.kernel_tools[tool["name"]] = tool
+        self.created_tools.append(tool)
+        self._update_tool_list()
+        return f"Tool `{tool['name']}` is defined; call it as a tool from your next turn."
+
+    def _validate_tool(self, data: dict) -> dict:
+        name, code = (data.get("name") or "").strip(), data.get("code") or ""
+        reserved = RESERVED_TOOL_NAMES | self.configured_tools
+        if not name.isidentifier() or name in reserved:
+            raise ValueError(f"the name must be a Python identifier other than {sorted(reserved)}")
+        created = {tool["name"] for tool in self.created_tools}
+        if name not in created and len(created) >= MAX_CREATED_TOOLS:
+            raise ValueError(f"at most {MAX_CREATED_TOOLS} tools; redefine one of {sorted(created)} instead")
+        parameters = data.get("parameters") or {"type": "object", "properties": {}}
+        if isinstance(parameters, str):  # some models send the schema as a JSON string
+            parameters = json.loads(parameters)
+        if not isinstance(parameters, dict) or parameters.get("type") != "object":
+            raise ValueError('parameters must be a JSON schema object: {"type": "object", "properties": {...}}')
+        if len(code) > MAX_TOOL_CODE_CHARS:
+            raise ValueError(f"keep the code under {MAX_TOOL_CODE_CHARS} characters")
+        if not re.search(rf"^def {re.escape(name)}\(", code, re.M):
+            raise ValueError(f"the code must define `def {name}(...)` at the top level")
+        compile(code, f"<tool {name}>", "exec")
+        description = (data.get("description") or "").strip()
+        if not description:
+            raise ValueError("describe what the tool does; you will see this description")
+        return {"name": name, "description": description[:1000], "parameters": parameters, "code": code}
 
     def __add__(self, model) -> "Agent":
         if not isinstance(model, (OpenAI, AsyncOpenAI)):
@@ -111,6 +186,8 @@ class Harness:
         name = tool_call.get("function", {}).get("name")
         try:
             arguments = json.loads(tool_call["function"]["arguments"] or "{}")
+            if name == "define_tool" and self.tool_creation:
+                return self.define_tool(arguments, km, kc)
             # A kernel tool call becomes a call of its function; the ipython tool runs the code itself
             code = f"{name}(**{arguments!r})" if name in self.kernel_tools else arguments["code"]
         except (KeyError, TypeError, json.JSONDecodeError) as error:

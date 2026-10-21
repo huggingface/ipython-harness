@@ -116,6 +116,9 @@ class Agent:
         self.max_tokens = kwargs.get("max_tokens", MAX_TOKENS_PER_TURN)
         # When set, tool results end with the time used so far, e.g. `[elapsed 12m of 60m]`
         self.time_limit_sec = kwargs.get("time_limit_sec")
+        # Sampling sent with every request; None leaves it to the server's default
+        self.temperature = kwargs.get("temperature")
+        self.top_p = kwargs.get("top_p")
 
     async def run_task(
         self, query: str, debug: bool = False, approve_commands: bool = False
@@ -299,6 +302,11 @@ class Agent:
 
     async def _complete(self, conversation):
         # Retries connection errors, rate limits (429) and 5xx; other errors raise with the server's reason
+        sampling = {
+            key: value
+            for key, value in (("temperature", self.temperature), ("top_p", self.top_p))
+            if value is not None
+        }
         for delay in (*RETRY_DELAYS_SEC, None):
             try:
                 return await self._call(
@@ -307,6 +315,7 @@ class Agent:
                     messages=conversation,
                     tools=self.harness.tool_list,
                     max_tokens=self.max_tokens,
+                    **sampling,
                 )
             except openai.APIConnectionError:
                 if delay is None:

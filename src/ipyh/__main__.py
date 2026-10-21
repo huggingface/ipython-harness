@@ -62,7 +62,12 @@ def main() -> None:
     parser.add_argument(
         "--harness-config",
         type=Path,
-        help="JSON file with a system_prompt and kernel tools (see Harness.from_config)",
+        help="JSON file with a system_prompt, kernel tools and tool_creation (see Harness.from_config)",
+    )
+    parser.add_argument(
+        "--tool-creation",
+        action="store_true",
+        help="offer `define_tool`, so the model adds its own kernel tools while it runs",
     )
     parser.add_argument(
         "--time-limit-sec",
@@ -70,21 +75,30 @@ def main() -> None:
         default=None,
         help="when set, tool results show the time used so far",
     )
+    parser.add_argument("--temperature", type=float, default=None, help="default: the server's")
+    parser.add_argument("--top-p", type=float, default=None, help="default: the server's")
     args = parser.parse_args()
 
     harness = Harness.from_config(args.harness_config) if args.harness_config else Harness()
+    harness.tool_creation = harness.tool_creation or args.tool_creation
+    harness._update_tool_list()
     agent = harness + AsyncOpenAI(
         base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY")
     )
     agent.model_name = args.model
     agent.python = None if args.python.lower() == "none" else args.python
     agent.time_limit_sec = args.time_limit_sec
+    agent.temperature = args.temperature
+    agent.top_p = args.top_p
 
     def save() -> None:
         state = agent.trajectories[agent.current_task]
         record = {
             "version": __version__,
             "model": agent.model_name,
+            "sampling": {"temperature": agent.temperature, "top_p": agent.top_p},
+            "tools": [tool["function"]["name"] for tool in harness.tool_list],
+            "created_tools": harness.created_tools,
             "done": state["done"],
             "conversation": state["trajectory"],
             "turns": state["turns"],

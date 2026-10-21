@@ -58,6 +58,50 @@ Before you finish:
 3. Fix anything that does not match, then check again.
 Only then reply with a short summary and no tool call."""
 
+# With kernel tools, the prompt's "exactly one tool" sentence becomes ONE_TOOL[1] and a list of the
+# other tools follows it; without them the prompt is sent unchanged.
+ONE_TOOL = ("You have exactly one tool, `ipython`, which runs", "Your main tool is `ipython`, which runs")
+TOOLS_SECTION = (
+    "\n\nOther tools: Python functions already defined in the kernel. Call them as tools, or "
+    "from your own cells.\n{tools}"
+)
+
+# Offered when the harness allows tool creation: the model adds its own kernel tools while it runs.
+DEFINE_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "define_tool",
+        "description": (
+            "Define a new tool: a Python function in the kernel that is offered as its own tool "
+            "from your next turn. Use it for a step you repeat (e.g. run the checks and summarize "
+            "what fails). Redefining a tool you made replaces it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Tool name: a Python identifier."},
+                "description": {"type": "string", "description": "What the tool does and returns."},
+                "parameters": {
+                    "type": "object",
+                    "description": 'JSON schema of its arguments: {"type": "object", "properties": {...}}',
+                },
+                "code": {
+                    "type": "string",
+                    "description": "Python source defining `def <name>(...)` at the top level; it returns or prints its result.",
+                },
+            },
+            "required": ["name", "description", "code"],
+        },
+    },
+}
+TOOL_CREATION_NOTE = (
+    "\n\nYou can add tools with `define_tool`: when you repeat the same kind of step, wrap it in a "
+    "function and call it as a tool from then on (at most {limit})."
+)
+RESERVED_TOOL_NAMES = {"ipython", "define_tool", "edit", "view"}
+MAX_CREATED_TOOLS = 8
+MAX_TOOL_CODE_CHARS = 20_000
+
 # Fills `{python}` when the kernel runs on the task's own interpreter (`{path}`).
 TASK_PYTHON = (
     "The kernel uses the task's Python ({path}): its installed packages import directly, and "

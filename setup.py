@@ -23,7 +23,7 @@ requirements = [
 
 setup(
     name="ipyharness",
-    version="0.2.0",
+    version="0.3.0",
     packages=find_packages("src"),
     package_dir={"": "src"},
     install_requires=requirements,
