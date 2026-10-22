@@ -221,6 +221,12 @@ class Agent:
                     km=km,
                     kc=kc,
                 )
+                try:
+                    json.loads(tool_call["function"]["arguments"] or "{}")
+                except (KeyError, TypeError, json.JSONDecodeError):
+                    # A malformed call (e.g. cut at the token limit) stays in the history as an empty
+                    # one: servers reject a history whose arguments are not valid JSON
+                    tool_call["function"]["arguments"] = "{}"
                 conversation.append(
                     {"role": "tool", "tool_call_id": tool_call["id"], "content": result}
                 )
