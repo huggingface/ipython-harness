@@ -37,6 +37,16 @@ print(message.content)
 
 `approve_commands` will ask you to prompt `y` or `n` upon inspecting the proposed tool call of the model.
 
+## Skills
+
+The harness supports [Agent Skills](https://agentskills.io): folders with a `SKILL.md` whose frontmatter has a `name` and a `description`. Pass SKILL.md files, skill folders, or folders of skill folders (e.g. `~/.claude/skills`):
+
+```py
+agent = Harness(skills=["~/.claude/skills", "./my-skill"]) + model
+```
+
+The CLI takes `--skills PATH [PATH ...]`, and a `--harness-config` JSON file can include a `"skills"` list. As in pi or deepagents, only each skill's name, description and path go in the system prompt (in an `<available_skills>` block). The model reads a full `SKILL.md` with the kernel's `view()` helper when a task matches it, so there is no extra tool. The kernel must be able to read the skill folders, which is always true for the local kernel.
+
 ## Evaluation
 
 There is a `harbor` integration inside `integrations/`. We will provide later reproducible scripts to obtain our evaluations.

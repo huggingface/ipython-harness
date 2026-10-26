@@ -65,6 +65,13 @@ def main() -> None:
         help="JSON file with a system_prompt and kernel tools (see Harness.from_config)",
     )
     parser.add_argument(
+        "--skills",
+        type=Path,
+        nargs="+",
+        default=[],
+        help="SKILL.md files, skill folders or folders of skill folders (e.g. ~/.claude/skills)",
+    )
+    parser.add_argument(
         "--time-limit-sec",
         type=float,
         default=None,
@@ -72,7 +79,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    harness = Harness.from_config(args.harness_config) if args.harness_config else Harness()
+    harness = (
+        Harness.from_config(args.harness_config, skills=args.skills)
+        if args.harness_config
+        else Harness(skills=args.skills)
+    )
     agent = harness + AsyncOpenAI(
         base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY")
     )

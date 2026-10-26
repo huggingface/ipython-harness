@@ -11,7 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional, Callable, List
+from pathlib import Path
+from typing import Optional, Callable, List, Union
 
 import itertools
 import json
@@ -32,6 +33,7 @@ from ipyh.constants import (
     TASK_PYTHON,
 )
 from ipyh.normalizers import QUIET_ENV, python_default_normalizer, truncate
+from ipyh.skills import load_skills, render_skills
 
 _ANSI_SGR = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # colour in IPython tracebacks
 _TIMEOUT_LINE = re.compile(
@@ -53,10 +55,14 @@ class Harness:
         system_prompt: Optional[str] = DEFAULT_SYSTEM_PROMPT,
         tool_processor: Optional[Callable] = python_default_normalizer,
         tools: Optional[List[dict]] = None,
+        skills: Optional[List[Union[str, Path]]] = None,
         **kwargs,
     ):
         self.system_prompt = system_prompt
         self.tool_processor = tool_processor
+        # Agent Skills: SKILL.md files, skill folders or folders of skill folders. Their names and
+        # descriptions are listed in the system prompt, and the model `view()`s a SKILL.md when needed
+        self.skills = load_skills(skills or [])
 
         # Kernel tools: each is a Python function, defined in the kernel by `code`, that the model
         # calls as its own tool, e.g. {"name": "f", "description": ..., "parameters": {...}, "code": "def f(x): ..."}
@@ -69,12 +75,15 @@ class Harness:
 
     @classmethod
     def from_config(cls, path: str, **kwargs) -> "Harness":
-        """A harness from a JSON file with an optional `system_prompt` and `tools` (kernel tools)."""
+        """A harness from a JSON file with an optional `system_prompt`, `tools` (kernel tools) and
+        `skills` (paths, relative ones resolved from the file's folder)."""
         with open(path) as f:
             config = json.load(f)
+        skills = [Path(path).parent / Path(skill).expanduser() for skill in config.get("skills", [])]
         return cls(
             system_prompt=config.get("system_prompt", DEFAULT_SYSTEM_PROMPT),
             tools=config.get("tools"),
+            skills=skills + list(kwargs.pop("skills", None) or []),
             **kwargs,
         )
 
@@ -83,10 +92,13 @@ class Harness:
         return "\n".join([HELPERS, *(tool["code"] for tool in self.kernel_tools.values())])
 
     def render_system_prompt(self, python: Optional[str]) -> str:
-        """The system prompt for a kernel on `python` (None: a private interpreter)."""
-        return self.system_prompt.format(
+        """The system prompt for a kernel on `python` (None: a private interpreter), then the skills."""
+        prompt = self.system_prompt.format(
             python=TASK_PYTHON.format(path=python) if python else PRIVATE_PYTHON
         )
+        # Appended after `format`, so braces in a skill's description are kept as they are
+        skills = render_skills(self.skills)
+        return f"{prompt}\n\n{skills}" if skills else prompt
 
     def __add__(self, model) -> "Agent":
         if not isinstance(model, (OpenAI, AsyncOpenAI)):

@@ -58,6 +58,11 @@ Before you finish:
 3. Fix anything that does not match, then check again.
 Only then reply with a short summary and no tool call."""
 
+# Appended to the system prompt, followed by the `<available_skills>` list, when the harness has skills
+SKILLS_PROMPT = """Skills: each skill below is a folder of instructions, scripts and resources for one kind of
+task. When the task matches a skill's description, read its SKILL.md in full with `view(path)`
+before you start, and follow it. Paths in a skill are relative to the folder of its SKILL.md."""
+
 # Fills `{python}` when the kernel runs on the task's own interpreter (`{path}`).
 TASK_PYTHON = (
     "The kernel uses the task's Python ({path}): its installed packages import directly, and "
