@@ -73,7 +73,7 @@ harness.save("copy-of-my-harness")
 
 ## Evaluation
 
-There is a `harbor` integration inside `integrations/`. We will provide later reproducible scripts to obtain our evaluations.
+We will provide later reproducible scripts to obtain our evaluations.
 
 ## Contributing
 
