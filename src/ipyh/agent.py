@@ -11,10 +11,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from typing import Optional
+from typing import Iterable, Optional
 
 import asyncio
-import itertools
 import json
 import os
 import secrets
@@ -59,52 +58,52 @@ class Agent:
         self,
         model,
         harness: Harness,
-        **kwargs,
+        *,
+        model_name: Optional[str] = None,
+        python: Optional[str] = sys.executable,
+        max_iteration: Optional[int] = None,
+        max_tokens: int = MAX_TOKENS_PER_TURN,
+        time_limit_sec: Optional[float] = None,
+        context_window: Optional[int] = None,
+        keep_tool_results: Optional[int] = None,
+        stop_tools: Iterable[str] = (),
     ):
-        # Retries are done in `_complete`, and a slow generation is waited for.
-        self.model = model.with_options(
-            max_retries=0, timeout=openai.Timeout(None, connect=30.0)
-        )
+        """
+        - `model_name`: the served model to use (None: the first one listed by `/v1/models`).
+        - `python`: the interpreter named in the system prompt (None: "a private Python").
+        - `max_iteration`: model calls per task (None: no limit).
+        - `max_tokens`: reasoning + answer tokens per call, so one turn cannot use the whole budget.
+        - `time_limit_sec`: when set, tool results end with the time used, e.g. `[elapsed 12m of 60m]`.
+        - `context_window`: the model's context in tokens, to compact before it fills (None: compact
+          only when the server rejects a request as too long).
+        - `keep_tool_results`: tool results sent verbatim; older ones are sent as one-line stubs (the
+          stored trajectory keeps them in full). None: send every result verbatim.
+        - `stop_tools`: kernel tools whose successful call (no traceback) ends the task, e.g. one that
+          submits the answer, so the model is not asked for a closing reply.
+        """
+        # Retries are done in `_complete`, and a slow generation is waited for
+        self.model = model.with_options(max_retries=0, timeout=openai.Timeout(None, connect=30.0))
         self.sync_client = isinstance(model, openai.OpenAI)
         self.harness = harness
-
-        self.trajectories = None
-        self.current_task = None
-        # None: no limit on model calls per task
-        self.max_iteration = kwargs.get("max_iteration")
-        # A server can serve several models, `model_name` picks one of them. Otherwise
-        # we use the first model listed by the server's `/v1/models` endpoint
-        self.model_name = kwargs.get("model_name")
-        # Interpreter named in the system prompt (None: "a private Python"); defaults to the kernel's
-        self.python = kwargs.get("python", sys.executable)
-        # Reasoning + answer tokens per model call, so one turn cannot use the whole time budget
-        self.max_tokens = kwargs.get("max_tokens", MAX_TOKENS_PER_TURN)
-        # When set, tool results end with the time used so far, e.g. `[elapsed 12m of 60m]`
-        self.time_limit_sec = kwargs.get("time_limit_sec")
-        # The model's context window in tokens, to compact before it fills. None: compact only when
-        # the server rejects a request as too long
-        self.context_window = kwargs.get("context_window")
-        # Tool results sent verbatim: older ones become a one-line stub in the request (the stored
-        # trajectory keeps them in full). None: send every result verbatim
-        self.keep_tool_results = kwargs.get("keep_tool_results")
-        # Kernel tools that end the task when a call to them succeeds (its output has no traceback),
-        # e.g. a tool that submits the answer: the model is not asked for a closing reply
-        self.stop_tools = set(kwargs.get("stop_tools") or [])
+        self.model_name = model_name
+        self.python = python
+        self.max_iteration = max_iteration
+        self.max_tokens = max_tokens
+        self.time_limit_sec = time_limit_sec
+        self.context_window = context_window
+        self.keep_tool_results = keep_tool_results
+        self.stop_tools = set(stop_tools)
         # The latest reasoning is sent back with the history, unless the server rejects it
         self.send_reasoning = True
+
+        self.trajectories = {}
+        self.current_task = None
 
     async def run_task(
         self, query: str, debug: bool = False, approve_commands: bool = False
     ):
-        if self.trajectories is None:
-            self.trajectories = {}
-
         if self.model_name is None:
             self.model_name = (await self._call(self.model.models.list)).data[0].id
-
-        random_hash = secrets.token_hex(8)
-        self.trajectories[random_hash] = {}
-        self.current_task = random_hash
 
         km, kc = await asyncio.to_thread(
             start_new_kernel, kernel_name="python3", stderr=subprocess.DEVNULL
@@ -118,42 +117,32 @@ class Agent:
             kc=kc,
         )
 
-        conversation = [
-            {
-                "role": "system",
-                "content": self.harness.render_system_prompt(self.python),
-            },
-            {"role": "user", "content": query},
-        ]
-        self.trajectories[random_hash]["kernels"] = [km, kc]
-        self.trajectories[random_hash]["query"] = query
-        # The turns each compaction replaced, oldest first
-        self.trajectories[random_hash]["compacted"] = []
-        self.trajectories[random_hash]["trajectory"] = conversation
-        # One entry per model call: token usage and reasoning (which is not sent back to the model)
-        self.trajectories[random_hash]["turns"] = []
-        self.trajectories[random_hash]["nudged"] = False
-        self.trajectories[random_hash]["done"] = False
-        self.trajectories[random_hash]["started"] = time.monotonic()
+        self.current_task = secrets.token_hex(8)
+        task = self.trajectories[self.current_task] = {
+            "kernels": [km, kc],
+            "query": query,
+            "trajectory": [
+                {"role": "system", "content": self.harness.render_system_prompt(self.python)},
+                {"role": "user", "content": query},
+            ],
+            # One entry per model call: token usage and reasoning
+            "turns": [],
+            # The turns each compaction replaced, oldest first
+            "compacted": [],
+            "nudged": False,
+            "done": False,
+            "started": time.monotonic(),
+        }
 
-        # First iteration, in debug mode the caller drives the next ones with `run_step`
+        # First turn; in debug mode the caller drives the next ones with `run_step`
         message = await self.run_step(approve_commands=approve_commands)
-
         if debug:
             return message
-
         try:
-            for _ in (
-                range(self.max_iteration - 1)
-                if self.max_iteration
-                else itertools.count()
-            ):
-                if self.trajectories[random_hash]["done"]:
-                    break
+            while not task["done"] and len(task["turns"]) < (self.max_iteration or float("inf")):
                 message = await self.run_step(approve_commands=approve_commands)
         finally:
-            self.shutdown_kernel(random_hash)
-
+            self.shutdown_kernel(self.current_task)
         return message
 
     async def run_step(
@@ -189,11 +178,8 @@ class Agent:
         message = response.choices[0].message
 
         content = message.content or ""
-        reasoning = (
-            (message.model_extra or {}).get("reasoning_content")
-            or (message.model_extra or {}).get("reasoning")
-            or ""
-        )
+        extra = message.model_extra or {}
+        reasoning = extra.get("reasoning_content") or extra.get("reasoning") or ""
         assistant_message = {"role": "assistant", "content": content}
         tool_calls = [call.model_dump() for call in message.tool_calls or []]
         if not tool_calls:
@@ -219,7 +205,6 @@ class Agent:
         if tool_calls:
             assistant_message["tool_calls"] = tool_calls
 
-            stopped = False
             for tool_call in tool_calls:
                 if approve_commands:
                     approve = input(
@@ -246,9 +231,8 @@ class Agent:
                     {"role": "tool", "tool_call_id": tool_call["id"], "content": result}
                 )
                 if tool_call.get("function", {}).get("name") in self.stop_tools and "Traceback" not in result:
-                    stopped = True
-            if stopped:
-                trajectory["done"] = True
+                    trajectory["done"] = True
+            if trajectory["done"]:
                 return message
             if self.time_limit_sec:
                 minutes = (time.monotonic() - trajectory["started"]) / 60
