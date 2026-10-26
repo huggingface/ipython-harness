@@ -44,6 +44,27 @@ _PYTHON_LINE = re.compile(
 )
 
 
+def _shell_script(code: str, output: str) -> Optional[str]:
+    """The cell as a `%%bash` cell if it is a shell script the model wrote as Python, else None.
+
+    Models often write `!cmd` on the first line and then bare shell lines below it. IPython fails
+    to compile such a cell, so nothing ran and it is safe to rerun it as bash. We only do so when
+    the cell failed with a SyntaxError, starts with `!`, and none of its other lines look like Python.
+    """
+    lines = code.strip().splitlines()
+    looks_like_shell = (
+        len(lines) > 1
+        and lines[0].lstrip().startswith("!")
+        and not any(_PYTHON_LINE.match(line) for line in lines[1:])
+    )
+    if "SyntaxError" not in output or not looks_like_shell:
+        return None
+    # Drop the `!` prefixes: in a bash cell every line is already a shell line
+    return "%%bash\n" + "\n".join(
+        line.lstrip()[1:] if line.lstrip().startswith("!") else line for line in lines
+    )
+
+
 class Harness:
     """
     A simple harness object which consists of a ipython shell access. The harness
@@ -87,10 +108,6 @@ class Harness:
             **kwargs,
         )
 
-    def setup_code(self) -> str:
-        """Run once in each new kernel: the file helpers, then the kernel tools' definitions."""
-        return "\n".join([HELPERS, *(tool["code"] for tool in self.kernel_tools.values())])
-
     def render_system_prompt(self, python: Optional[str]) -> str:
         """The system prompt for a kernel on `python` (None: a private interpreter), then the skills."""
         prompt = self.system_prompt.format(
@@ -133,21 +150,9 @@ class Harness:
 
         started = time.monotonic()
         output = self._run_cell(code, timeout, km, kc)
-        # Shell lines in a Python cell (`!cmd` then bare shell) fail to compile, so nothing ran: run them as bash
-        lines = code.strip().splitlines()
-        if (
-            "SyntaxError" in output
-            and lines[0].lstrip().startswith("!")
-            and len(lines) > 1
-            and not any(_PYTHON_LINE.match(line) for line in lines[1:])
-        ):
-            shell = "\n".join(
-                line.lstrip()[1:] if line.lstrip().startswith("!") else line
-                for line in lines
-            )
-            output = "[ran as %%bash: the cell held shell lines]\n" + self._run_cell(
-                "%%bash\n" + shell, timeout, km, kc
-            )
+        shell = _shell_script(code, output)
+        if shell:
+            output = "[ran as %%bash: the cell held shell lines]\n" + self._run_cell(shell, timeout, km, kc)
         elapsed = time.monotonic() - started
         if elapsed > 10:
             output += f"\n[ran in {elapsed:.0f}s]"
@@ -202,8 +207,13 @@ class Harness:
         return _ANSI_SGR.sub("", "".join(out)) or "[no output]"
 
     def kernel_setup(self) -> str:
-        """The first cell of a new or restarted kernel."""
-        return f"import os; os.environ.update({json.dumps(QUIET_ENV)})\n{self.setup_code()}"
+        """The first cell of a new or restarted kernel: quiet env vars, the file helpers, then the
+        kernel tools' definitions."""
+        return "\n".join([
+            f"import os; os.environ.update({json.dumps(QUIET_ENV)})",
+            HELPERS,
+            *(tool["code"] for tool in self.kernel_tools.values()),
+        ])
 
     def _restart_kernel(self, km, kc) -> None:
         km.restart_kernel(now=True)
