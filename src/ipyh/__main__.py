@@ -62,7 +62,7 @@ def main() -> None:
     parser.add_argument(
         "--harness-config",
         type=Path,
-        help="JSON file with a system_prompt and kernel tools (see Harness.from_config)",
+        help="harness folder or JSON file: system prompt, kernel tools, skills (see Harness.from_config)",
     )
     parser.add_argument(
         "--skills",
@@ -77,6 +77,12 @@ def main() -> None:
         default=None,
         help="when set, tool results show the time used so far",
     )
+    parser.add_argument(
+        "--max-turns",
+        type=int,
+        default=None,
+        help="stop after this many model calls (default: the harness's max_iteration, else none)",
+    )
     args = parser.parse_args()
 
     harness = (
@@ -89,7 +95,10 @@ def main() -> None:
     )
     agent.model_name = args.model
     agent.python = None if args.python.lower() == "none" else args.python
-    agent.time_limit_sec = args.time_limit_sec
+    if args.time_limit_sec is not None:
+        agent.time_limit_sec = args.time_limit_sec
+    if args.max_turns is not None:
+        agent.max_iteration = args.max_turns
 
     def save() -> None:
         state = agent.trajectories[agent.current_task]
@@ -108,7 +117,8 @@ def main() -> None:
         await agent.run_task(args.instruction_file.read_text(), debug=True)
         try:
             save()
-            while not agent.trajectories[agent.current_task]["done"]:
+            state = agent.trajectories[agent.current_task]
+            while not state["done"] and len(state["turns"]) < (agent.max_iteration or float("inf")):
                 await agent.run_step()
                 save()
         finally:

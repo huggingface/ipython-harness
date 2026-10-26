@@ -87,6 +87,9 @@ class Agent:
         # Tool results sent verbatim: older ones become a one-line stub in the request (the stored
         # trajectory keeps them in full). None: send every result verbatim
         self.keep_tool_results = kwargs.get("keep_tool_results")
+        # Kernel tools that end the task when a call to them succeeds (its output has no traceback),
+        # e.g. a tool that submits the answer: the model is not asked for a closing reply
+        self.stop_tools = set(kwargs.get("stop_tools") or [])
 
     async def run_task(
         self, query: str, debug: bool = False, approve_commands: bool = False
@@ -208,6 +211,7 @@ class Agent:
         if tool_calls:
             assistant_message["tool_calls"] = tool_calls
 
+            stopped = False
             for tool_call in tool_calls:
                 if approve_commands:
                     approve = input(
@@ -233,6 +237,11 @@ class Agent:
                 conversation.append(
                     {"role": "tool", "tool_call_id": tool_call["id"], "content": result}
                 )
+                if tool_call.get("function", {}).get("name") in self.stop_tools and "Traceback" not in result:
+                    stopped = True
+            if stopped:
+                trajectory["done"] = True
+                return message
             if self.time_limit_sec:
                 minutes = (time.monotonic() - trajectory["started"]) / 60
                 conversation[-1]["content"] += (
