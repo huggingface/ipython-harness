@@ -114,6 +114,7 @@ RETRY_DELAYS_SEC = (2, 5, 15, 30, 60, 120)  # model endpoint: connection errors 
 # rejects a request as too long, the older turns are replaced by a model-written checkpoint
 COMPACT_HEADROOM = 4_000  # tokens: room for the cell output appended after the measured turn
 COMPACT_KEEP_CHARS = 40_000  # the most recent turns kept verbatim (~10k tokens)
+TOOL_STUB_CHARS = 200  # an older tool result longer than this is sent as its first line and a note
 COMPACT_CELL_CHARS = 2_000  # each cell and its output, as the summarizer reads them
 # Matches a server's "prompt too long" rejection (OpenAI, vLLM, llama.cpp, SGLang)
 CONTEXT_OVERFLOW = re.compile(

@@ -39,9 +39,10 @@ from ipyh.constants import (
     RETRY_DELAYS_SEC,
     SUMMARY_PREFIX,
     TOOL_MARKUP,
+    TOOL_STUB_CHARS,
 )
 from ipyh.harness import Harness
-from ipyh.normalizers import QUIET_ENV, truncate
+from ipyh.normalizers import truncate
 from ipyh.utils import recover_tool_calls, render_transcript
 
 
@@ -83,6 +84,9 @@ class Agent:
         # The model's context window in tokens, to compact before it fills. None: compact only when
         # the server rejects a request as too long
         self.context_window = kwargs.get("context_window")
+        # Tool results sent verbatim: older ones become a one-line stub in the request (the stored
+        # trajectory keeps them in full). None: send every result verbatim
+        self.keep_tool_results = kwargs.get("keep_tool_results")
 
     async def run_task(
         self, query: str, debug: bool = False, approve_commands: bool = False
@@ -102,10 +106,9 @@ class Agent:
         )
         # Quiet progress bars and colour in the commands the model runs, and define the file helpers
         # and kernel tools
-        setup = f"import os; os.environ.update({json.dumps(QUIET_ENV)})\n{self.harness.setup_code()}"
         await asyncio.to_thread(
             self.harness.execute_tool,
-            {"function": {"arguments": json.dumps({"code": setup})}},
+            {"function": {"arguments": json.dumps({"code": self.harness.kernel_setup()})}},
             km=km,
             kc=kc,
         )
@@ -166,12 +169,12 @@ class Agent:
             conversation.append({"role": "user", "content": optional_prompt})
 
         try:
-            response = await self._complete(conversation)
+            response = await self._complete(self._request_view(conversation))
         except openai.BadRequestError as error:
             if not CONTEXT_OVERFLOW.search(str(error)):
                 raise
             await self.compact()
-            response = await self._complete(conversation)
+            response = await self._complete(self._request_view(conversation))
         message = response.choices[0].message
 
         content = message.content or ""
@@ -313,6 +316,26 @@ class Agent:
                 "content": f"{trajectory['query']}\n\n{SUMMARY_PREFIX.format(path=path)}\n{summary}",
             }
         ]
+
+    def _request_view(self, conversation: list) -> list:
+        """The conversation as sent: tool results older than the last `keep_tool_results` become stubs.
+
+        The cut moves in steps of `keep_tool_results`, so the request's prefix stays the same for
+        several turns (a server's prompt cache keeps working between steps).
+        """
+        keep = self.keep_tool_results
+        results = [i for i, message in enumerate(conversation) if message["role"] == "tool"]
+        if not keep or len(results) <= keep:
+            return conversation
+        stub_count = (len(results) - keep) // keep * keep
+        view = list(conversation)
+        for i in results[:stub_count]:
+            content = str(view[i]["content"])
+            if len(content) > TOOL_STUB_CHARS:
+                first = content.strip().splitlines()[0][:TOOL_STUB_CHARS] if content.strip() else ""
+                view[i] = {**view[i], "content": f"{first}\n[older output, {len(content)} chars, dropped to "
+                                                 "save context; run the call again if you need it]"}
+        return view
 
     def shutdown_kernel(self, task: Optional[str] = None):
         km, kc = self.trajectories[task or self.current_task]["kernels"]

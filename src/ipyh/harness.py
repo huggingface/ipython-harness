@@ -31,7 +31,7 @@ from ipyh.constants import (
     PRIVATE_PYTHON,
     TASK_PYTHON,
 )
-from ipyh.normalizers import python_default_normalizer, truncate
+from ipyh.normalizers import QUIET_ENV, python_default_normalizer, truncate
 
 _ANSI_SGR = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")  # colour in IPython tracebacks
 _TIMEOUT_LINE = re.compile(
@@ -180,5 +180,25 @@ class Harness:
                     "", output_hook=lambda msg: None, timeout=30, allow_stdin=False
                 )
             except TimeoutError:
-                pass
+                # Still busy: native code (a ctypes call, a C extension) ignores the interrupt, and every
+                # later cell would hang behind it. Restart the kernel so the agent can go on.
+                self._restart_kernel(km, kc)
+                out[-1] = (
+                    f"\n[cell timed out after {timeout:.0f}s and ignored the interrupt (stuck in native code); "
+                    "the kernel was restarted: variables and imports are gone, the tools are defined again]\n"
+                )
         return _ANSI_SGR.sub("", "".join(out)) or "[no output]"
+
+    def kernel_setup(self) -> str:
+        """The first cell of a new or restarted kernel."""
+        return f"import os; os.environ.update({json.dumps(QUIET_ENV)})\n{self.setup_code()}"
+
+    def _restart_kernel(self, km, kc) -> None:
+        km.restart_kernel(now=True)
+        kc.wait_for_ready(timeout=120)
+        try:
+            kc.execute_interactive(
+                self.kernel_setup(), output_hook=lambda msg: None, timeout=120, allow_stdin=False
+            )
+        except TimeoutError:
+            pass
