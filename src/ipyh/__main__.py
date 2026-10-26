@@ -91,7 +91,8 @@ def main() -> None:
         else Harness(skills=args.skills)
     )
     agent = harness + AsyncOpenAI(
-        base_url=args.base_url, api_key=os.environ.get("OPENAI_API_KEY", "EMPTY")
+        # Popped, so the kernel (which inherits this environment) cannot read the key and spend with it
+        base_url=args.base_url, api_key=os.environ.pop("OPENAI_API_KEY", "EMPTY")
     )
     agent.model_name = args.model
     agent.python = None if args.python.lower() == "none" else args.python

@@ -90,6 +90,8 @@ class Agent:
         # Kernel tools that end the task when a call to them succeeds (its output has no traceback),
         # e.g. a tool that submits the answer: the model is not asked for a closing reply
         self.stop_tools = set(kwargs.get("stop_tools") or [])
+        # The latest reasoning is sent back with the history, unless the server rejects it
+        self.send_reasoning = True
 
     async def run_task(
         self, query: str, debug: bool = False, approve_commands: bool = False
@@ -174,9 +176,15 @@ class Agent:
         try:
             response = await self._complete(self._request_view(conversation))
         except openai.BadRequestError as error:
-            if not CONTEXT_OVERFLOW.search(str(error)):
+            if "reasoning_content" in str(error):
+                # The server (e.g. Cerebras) rejects reasoning in the history: stop sending it
+                self.send_reasoning = False
+                for previous in conversation:
+                    previous.pop("reasoning_content", None)
+            elif CONTEXT_OVERFLOW.search(str(error)):
+                await self.compact()
+            else:
                 raise
-            await self.compact()
             response = await self._complete(self._request_view(conversation))
         message = response.choices[0].message
 
@@ -196,7 +204,7 @@ class Agent:
         # turns drop it to bound the context
         for previous in conversation:
             previous.pop("reasoning_content", None)
-        if reasoning:
+        if reasoning and self.send_reasoning:
             assistant_message["reasoning_content"] = reasoning
         conversation.append(assistant_message)
         usage = response.usage
